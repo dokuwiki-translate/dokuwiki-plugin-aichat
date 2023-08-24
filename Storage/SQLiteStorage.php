@@ -5,7 +5,6 @@ namespace dokuwiki\plugin\aichat\Storage;
 use dokuwiki\plugin\aichat\Chunk;
 use dokuwiki\plugin\sqlite\SQLiteDB;
 use KMeans\Cluster;
-use KMeans\Point;
 use KMeans\Space;
 
 /**
@@ -21,7 +20,7 @@ class SQLiteStorage extends AbstractStorage
     /** @var int Number of documents to randomly sample to create the clusters */
     const SAMPLE_SIZE = 2000;
     /** @var int The average size of each cluster */
-    const CLUSTER_SIZE = 400;
+    const CLUSTER_SIZE = 100;
 
     /** @var SQLiteDB */
     protected $db;
@@ -128,20 +127,21 @@ class SQLiteStorage extends AbstractStorage
     /** @inheritdoc */
     public function getSimilarChunks($vector, $limit = 4)
     {
-        $cluster = $this->getCluster($vector);
+        $clusters = $this->getClusters($vector, 4);
+        $clusters = join(',', $clusters);
         if ($this->logger) $this->logger->info(
-            'Using cluster {cluster} for similarity search', ['cluster' => $cluster]
+            'Using cluster {cluster} for similarity search', ['cluster' => $clusters]
         );
 
         $result = $this->db->queryAll(
-            'SELECT *, COSIM(?, embedding) AS similarity
+            "SELECT *, COSIM(?, embedding) AS similarity
                FROM embeddings
-              WHERE cluster = ?
+              WHERE cluster IN ($clusters)
                 AND GETACCESSLEVEL(page) > 0
                 AND similarity > CAST(? AS FLOAT)
            ORDER BY similarity DESC
-              LIMIT ?',
-            [json_encode($vector), $cluster, self::SIMILARITY_THRESHOLD, $limit]
+              LIMIT ?",
+            [json_encode($vector), self::SIMILARITY_THRESHOLD, $limit]
         );
         $chunks = [];
         foreach ($result as $record) {
@@ -278,7 +278,7 @@ class SQLiteStorage extends AbstractStorage
 
         while ($record = $handle->fetch(\PDO::FETCH_ASSOC)) {
             $vector = json_decode($record['embedding'], true);
-            $cluster = $this->getCluster($vector);
+            $cluster = $this->getClusters($vector, 1)[0];
             $query = 'UPDATE embeddings SET cluster = ? WHERE id = ?';
             $this->db->exec($query, [$cluster, $record['id']]);
             if ($this->logger) $this->logger->success(
@@ -292,14 +292,15 @@ class SQLiteStorage extends AbstractStorage
      * Get the nearest cluster for the given vector
      *
      * @param float[] $vector
-     * @return int|null
+     * @param int $num Number of clusters to return
+     * @return int[]
      */
-    protected function getCluster($vector)
+    protected function getClusters($vector, $num = 1)
     {
-        $query = 'SELECT cluster, centroid FROM clusters ORDER BY COSIM(centroid, ?) DESC LIMIT 1';
-        $result = $this->db->queryRecord($query, [json_encode($vector)]);
-        if (!$result) return null;
-        return $result['cluster'];
+        $query = 'SELECT cluster, centroid FROM clusters ORDER BY COSIM(centroid, ?) DESC LIMIT ?';
+        $result = $this->db->queryAll($query, [json_encode($vector), $num]);
+        if (!$result) return [];
+        return array_column($result, 'cluster');
     }
 
     /**
