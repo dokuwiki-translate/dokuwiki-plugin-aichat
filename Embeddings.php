@@ -2,6 +2,7 @@
 
 namespace dokuwiki\plugin\aichat;
 
+use dokuwiki\Cache\CacheRenderer;
 use dokuwiki\Extension\Event;
 use dokuwiki\File\PageResolver;
 use dokuwiki\plugin\aichat\Model\ChatInterface;
@@ -10,7 +11,6 @@ use dokuwiki\plugin\aichat\Storage\AbstractStorage;
 use dokuwiki\Search\Indexer;
 use splitbrain\phpcli\CLI;
 use TikToken\Encoder;
-use Vanderlee\Sentence\Sentence;
 
 /**
  * Manage the embeddings index
@@ -170,7 +170,7 @@ class Embeddings
                 ($matchRE && !preg_match($matchRE, ":$page"))
             ) {
                 // this page should not be in the index (anymore)
-                $this->storage->deletePageChunks($page, $chunkID);
+                $this->dropPageChunks($page, $chunkID);
                 continue;
             }
 
@@ -422,6 +422,30 @@ class Embeddings
         return $result;
     }
 
+    /**
+     * Drop the chunks for the given page from the storage and delete the render cache file
+     *
+     * This is a performance optimization, it only deletes chunks when a previously rendered cache
+     * file exists or if forced.
+     *
+     * @param string $page
+     * @param int $chunkID
+     * @param bool $force Should we force deletion even if no cache file exists?
+     * @return void
+     */
+    public function dropPageChunks($page, $chunkID, $force = false)
+    {
+        $cache = new CacheRenderer($page, wikiFN($page), 'aichat');
+        $x = $cache->cache;
+        if ($force || file_exists($cache->cache)) {
+            if ($this->logger instanceof CLI) {
+                $this->logger->info("Deleting chunks for page $page");
+            }
+
+            $this->storage->deletePageChunks($page, $chunkID);
+            @unlink($cache->cache);
+        }
+    }
 
     /**
      * Create a breadcrumb trail for the given page
